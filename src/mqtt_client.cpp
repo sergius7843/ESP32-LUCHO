@@ -1,4 +1,4 @@
-// mqtt_client.cpp - VERSIÓN ACTUALIZADA PARA CONTROL DE LUCES
+// src/mqtt_client.cpp
 
 #include "mqtt_client.h"
 #include "config.h"

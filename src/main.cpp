@@ -1,3 +1,5 @@
+// src/main.cpp
+
 #include <Arduino.h>
 #include "wifi_manager.h"
 #include "json_formatter.h"
@@ -6,9 +8,13 @@
 #include "config.h"
 #include "status_reporter.h"
 #include "temperature_sensor.h"
+#include "ldr_sensor.h"
+#include "light_controller.h"  // <-- NUEVO: Incluir el controlador de luces
 
-// --- Incluir el controlador de luces del auditorio
-#include "light_controller.h"
+// Variables globales para automatización
+float lastTemperature = 0.0;
+int lastLdrValue = 0;
+unsigned long lastAutomationCheck = 0;
 
 // Tarea que imprime y publica estado WiFi
 void wifiInfoTask(void *parameter) {
@@ -32,14 +38,40 @@ void memoryInfoTask(void *parameter) {
     }
 }
 
-// Tarea periódica para reportar estado de luces (opcional)
-void lightsStatusTask(void *parameter) {
+// NUEVA TAREA: Automatización basada en sensores
+void automationTask(void *parameter) {
     while (true) {
-        // Publicar estado de luces cada 30 segundos
-        if (mqtt_is_connected()) {
-            publish_all_lights_status();
+        // Chequear automatización solo si hay datos de sensores
+        if (lastTemperature > 0 || lastLdrValue > 0) {
+            check_temperature_automation(lastTemperature);
+            check_ldr_automation(lastLdrValue);
         }
-        vTaskDelay(pdMS_TO_TICKS(30000)); // 30 segundos
+        
+        vTaskDelay(pdMS_TO_TICKS(AUTOMATION_CHECK_INTERVAL));
+    }
+}
+
+// NUEVA TAREA: Monitoreo de sensores para automatización
+void sensorMonitorTask(void *parameter) {
+    while (true) {
+        // Leer temperatura
+        analogReadResolution(ADC_RESOLUTION_BITS);
+        int tempRaw = analogRead(TEMP_SENSOR_PIN);
+        float voltage = (tempRaw / float(ADC_MAX_VALUE)) * ADC_REF_VOLTAGE;
+        lastTemperature = voltage * 100.0;  // LM35: 10mV/°C
+        
+        // Leer LDR
+        int ldrRaw = analogRead(LDR_SENSOR_PIN);
+        lastLdrValue = ldrRaw;
+        
+        // Debug cada 10 segundos
+        static unsigned long lastDebug = 0;
+        if (millis() - lastDebug > 10000) {
+            Serial.printf("[SENSOR_MONITOR] Temp: %.1f°C, LDR: %d\n", lastTemperature, lastLdrValue);
+            lastDebug = millis();
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Leer cada segundo
     }
 }
 
@@ -47,17 +79,20 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     
-    Serial.println("=================================");
-    Serial.println("    ESP32 AUDITORIUM CONTROLLER");
-    Serial.println("=================================");
+    Serial.println("========================================");
+    Serial.println("🏢 ESP32 AUDITORIUM CONTROLLER v2.0");
+    Serial.println("========================================");
 
     // Inicializar WiFi y MQTT
+    Serial.println("[SETUP] Inicializando WiFi...");
     wifi_init();    // Inicializa y conecta a WiFi
+    
+    Serial.println("[SETUP] Configurando MQTT...");
     mqtt_setup();   // Configura servidor y callback MQTT
-
-    // ----- Inicializar el controlador de luces del auditorio -----
-    Serial.println("[SETUP] Inicializando controlador de luces...");
-    init_light_controller();
+    
+    // NUEVO: Inicializar control de luces y ventilador
+    Serial.println("[SETUP] Inicializando control de luces y ventilador...");
+    light_controller_setup();
 
     // Crear tareas FreeRTOS
     Serial.println("[SETUP] Creando tareas FreeRTOS...");
@@ -90,23 +125,40 @@ void setup() {
     // Tarea para el sensor de temperatura
     start_temperature_task();
 
-    // Tarea periódica de estado de luces (opcional)
+    // Tarea para el sensor de LDR
+    start_ldr_task();
+    
+    // NUEVAS TAREAS: Monitoreo de sensores y automatización
     xTaskCreatePinnedToCore(
-        lightsStatusTask,
-        "LightsStatusTask",
+        sensorMonitorTask,
+        "SensorMonitorTask",
+        4096,
+        NULL,
+        2,  // Prioridad más alta
+        NULL,
+        0   // Core 0
+    );
+    
+    xTaskCreatePinnedToCore(
+        automationTask,
+        "AutomationTask",
         4096,
         NULL,
         1,
         NULL,
-        0
+        0   // Core 0
     );
 
-    Serial.println("[SETUP] Sistema inicializado correctamente");
-    Serial.println("Comandos MQTT disponibles:");
-    Serial.println("- esp32/auditorium/lights/{1-8}/set");
-    Serial.println("- esp32/auditorium/lights/all/set");
-    Serial.println("- esp32/auditorium/scenario/set");
-    Serial.println("=================================");
+    Serial.println("[SETUP] ✓ Inicialización completada");
+    Serial.println("========================================");
+    
+    // Esperar a que MQTT se conecte y publicar estado inicial
+    delay(3000);
+    if (mqtt_is_connected()) {
+        publish_all_lights_status();
+        publish_fan_status();
+        Serial.println("[SETUP] ✓ Estados iniciales publicados");
+    }
 }
 
 void loop() {

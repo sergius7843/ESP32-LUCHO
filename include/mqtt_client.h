@@ -1,3 +1,4 @@
+// include/mqtt_client.h
 #ifndef MQTT_CLIENT_H
 #define MQTT_CLIENT_H
 
@@ -9,3 +10,4 @@ void mqtt_publish(const char* topic, const String& payload);
 bool mqtt_is_connected();
 
 #endif
+    
